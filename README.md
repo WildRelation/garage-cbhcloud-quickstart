@@ -123,6 +123,9 @@ garage bucket allow --read --write --owner ducklake --key ducklake-key
 
 ## 4. Connect with DuckDB
 
+The `CREATE OR REPLACE SECRET` statement is DuckDB SQL and works the same across all language bindings.
+
+**Python**
 ```python
 con.execute("""
 CREATE OR REPLACE SECRET garage_secret (
@@ -135,6 +138,23 @@ CREATE OR REPLACE SECRET garage_secret (
     USE_SSL true
 );
 """)
+```
+
+**Java**
+```java
+Connection conn = DriverManager.getConnection("jdbc:duckdb:");
+Statement stmt = conn.createStatement();
+stmt.execute(
+    "CREATE OR REPLACE SECRET garage_secret (" +
+    "    TYPE s3," +
+    "    KEY_ID 'GKxxxxxxxxxxxx'," +
+    "    SECRET 'your-secret-key'," +
+    "    ENDPOINT '<deployment-name>.app.cloud.cbh.kth.se'," +
+    "    REGION 'garage'," +
+    "    URL_STYLE 'path'," +
+    "    USE_SSL true" +
+    ")"
+);
 ```
 
 > `REGION 'garage'` must match `s3_region` in `garage.toml`.
