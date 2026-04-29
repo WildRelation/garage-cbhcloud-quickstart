@@ -2,9 +2,10 @@ FROM dxflrs/garage:v2.1.0 AS garage
 
 FROM alpine:3.19
 # gettext tillhandahåller envsubst för att ersätta env-variabler i garage.toml
-RUN apk add --no-cache gettext
+RUN apk add --no-cache gettext nginx
 COPY --from=garage /garage /usr/local/bin/garage
 COPY garage.toml /etc/garage.toml
+COPY nginx.conf /etc/nginx/nginx.conf
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 EXPOSE 3900 3901 3902 3903
