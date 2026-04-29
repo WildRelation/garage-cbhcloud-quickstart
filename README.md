@@ -1,160 +1,156 @@
-# Garage on cbhcloud
+# garage-cbhcloud-quickstart
 
-Deploy [Garage](https://garagehq.deuxfleurs.fr/) (S3-compatible object storage) on cbhcloud.
+Driftsätt [Garage](https://garagehq.deuxfleurs.fr/) (S3-kompatibel objektlagring) på cbhcloud med stöd för Admin API via nginx reverse proxy.
 
-## Prerequisites
+## Bakgrund och portproblem
 
-- Docker installed locally
-- GitHub account with a Personal Access Token (`write:packages` scope)
-- cbhcloud account
+cbhcloud exponerar bara den port som anges i `PORT`-miljövariabeln i Kubernetes Service. Övriga portar är blockerade av NetworkPolicy och kan inte nås från andra deployments.
+
+Garage kräver två portar:
+- **3900** – S3 API (publikt åtkomlig via `PORT=3900`)
+- **3903** – Admin API (behövs internt av Access Manager)
+
+**Lösning:** nginx lyssnar på port 3900 och fungerar som reverse proxy:
+- `/v2/*` → port 3903 (Garage Admin API)
+- allt annat → port 3905 (Garage S3 API, flyttad från 3900)
 
 ---
 
-## 1. Create the Docker image
+## Förutsättningar
 
-Create a new directory and add these three files:
+- Docker installerat lokalt
+- GitHub-konto med Personal Access Token (`write:packages`-behörighet)
+- cbhcloud-konto
 
-**Dockerfile**
-```dockerfile
-FROM dxflrs/garage:v2.1.0 AS garage
+---
 
-FROM alpine:3.19
-COPY --from=garage /garage /usr/local/bin/garage
-COPY garage.toml /etc/garage.toml
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-EXPOSE 3900 3901 3902 3903
-ENTRYPOINT ["/entrypoint.sh"]
-CMD ["server"]
-```
+## 1. Bygg och pusha Docker-imagen
 
-**garage.toml**
-```toml
-metadata_dir = "/data/meta"
-data_dir = "/data/data"
-db_engine = "sqlite"
-replication_factor = 1
-
-rpc_bind_addr = "[::]:3901"
-
-[s3_api]
-api_bind_addr = "[::]:3900"
-s3_region = "garage"
-
-[admin]
-api_bind_addr = "[::]:3903"
-```
-
-**entrypoint.sh**
-```sh
-#!/bin/sh
-set -e
-mkdir -p /data/meta /data/data
-exec garage "$@"
-```
-
-Build and push:
 ```bash
-echo "YOUR_GITHUB_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
-docker build -t ghcr.io/YOUR_GITHUB_USERNAME/garage-cbhcloud:latest .
-docker push ghcr.io/YOUR_GITHUB_USERNAME/garage-cbhcloud:latest
+git clone https://github.com/WildRelation/garage-cbhcloud-quickstart.git
+cd garage-cbhcloud-quickstart
+
+echo "DITT_GITHUB_TOKEN" | docker login ghcr.io -u DITT_GITHUB_ANVÄNDARNAMN --password-stdin
+docker build -t ghcr.io/DITT_GITHUB_ANVÄNDARNAMN/garage-cbhcloud-quickstart:latest .
+docker push ghcr.io/DITT_GITHUB_ANVÄNDARNAMN/garage-cbhcloud-quickstart:latest
 ```
 
-Make the package public:
-- Go to `github.com/YOUR_GITHUB_USERNAME?tab=packages`
-- Select `garage-cbhcloud` → Package settings → **Change visibility → Public**
+Gör paketet publikt:
+- Gå till `github.com/DITT_GITHUB_ANVÄNDARNAMN?tab=packages`
+- Välj `garage-cbhcloud-quickstart` → Package settings → **Change visibility → Public**
 
 ---
 
-## 2. Create the deployment
+## 2. Skapa deployment på cbhcloud
 
-**Image tag:** `ghcr.io/YOUR_GITHUB_USERNAME/garage-cbhcloud:latest`  
-**Image start arguments:** `server`  
-**Visibility:** Public  
-**Health check path:** `/`
+| Inställning | Värde |
+|---|---|
+| Image | `ghcr.io/DITT_GITHUB_ANVÄNDARNAMN/garage-cbhcloud-quickstart:latest` |
+| Image start arguments | `server` |
+| Visibility | **Public** |
+| Health check path | `/` |
 
-**Environment variables:**
+**Miljövariabler:**
 
-| Name | Value |
+| Namn | Värde |
 |---|---|
 | `PORT` | `3900` |
-| `GARAGE_RPC_SECRET` | output of `openssl rand -hex 32` |
+| `GARAGE_RPC_SECRET` | output av `openssl rand -hex 32` |
+| `GARAGE_ADMIN_TOKEN` | output av `openssl rand -hex 32` (spara detta värde!) |
 
 **Persistent storage:**
 
-| Name | App path |
+| Namn | App path |
 |---|---|
 | `garage-data` | `/data` |
 
 ---
 
-## 3. Initialize Garage
+## 3. Initiera Garage
 
-SSH into the container:
+SSH:a in i containern:
 ```bash
-ssh <deployment-name>@deploy.cloud.cbh.kth.se
+ssh <deployment-namn>@deploy.cloud.cbh.kth.se
 ```
 
-Get the node ID:
+Hämta node ID:
 ```bash
 garage node id
 ```
 
-Assign layout (replace `<node-id>` with the full hex string):
+Tilldela layout (ersätt `<node-id>` med den fullständiga hex-strängen):
 ```bash
 garage layout assign -z dc1 -c 1G <node-id>
 garage layout apply --version 1
 ```
 
-Create a bucket and access key:
+Skapa bucket och åtkomstnyckel:
 ```bash
 garage bucket create ducklake
 garage key create ducklake-key
+garage bucket allow --read --write --owner ducklake --key ducklake-key
 ```
 
-Save the **Key ID** (`GK...`) and **Secret key**.
+Spara **Key ID** (`GK...`) och **Secret key**.
 
-Grant permissions:
+---
+
+## 4. Hämta Admin Token
+
+Admin-tokenet injiceras via `envsubst` i `entrypoint.sh` och hamnar i `/tmp/garage.toml`.
+
+> **OBS:** Använd alltid `/tmp/garage.toml`, inte `/etc/garage.toml`.  
+> `/tmp/garage.toml` är den faktiska config som Garage kör med.
+
 ```bash
-garage bucket allow --read --write --owner ducklake --key ducklake-key
+ssh <deployment-namn>@deploy.cloud.cbh.kth.se
+cat /tmp/garage.toml | grep admin_token
+```
+
+Använd det exakta värdet som `GARAGE_ADMIN_TOKEN` i Access Manager-deploymentet.
+
+---
+
+## 5. Verifiera nginx-proxyn
+
+När deploymentet är igång ska Garage-loggar visa:
+
+```
+S3 API server listening on http://[::]:3905
+Admin API server listening on http://[::]:3903
+```
+
+Och healthcheck-requests ska gå via `127.0.0.1` (nginx):
+
+```
+10.42.x.x (via [::ffff:127.0.0.1]:xxxxx) GET /
 ```
 
 ---
 
-## 4. Connect with DuckDB
+## 6. Nginx-konfiguration
 
-The `CREATE OR REPLACE SECRET` statement is DuckDB SQL and works the same across all language bindings.
+```nginx
+server {
+    listen 3900;
 
-**Python**
-```python
-con.execute("""
-CREATE OR REPLACE SECRET garage_secret (
-    TYPE s3,
-    KEY_ID 'GKxxxxxxxxxxxx',
-    SECRET 'your-secret-key',
-    ENDPOINT '<deployment-name>.app.cloud.cbh.kth.se',
-    REGION 'garage',
-    URL_STYLE 'path',
-    USE_SSL true
-);
-""")
+    location /v2/ {
+        proxy_pass http://127.0.0.1:3903;   # Garage Admin API
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:3905;   # Garage S3 API
+    }
+}
 ```
 
-**Java**
-```java
-Connection conn = DriverManager.getConnection("jdbc:duckdb:");
-Statement stmt = conn.createStatement();
-stmt.execute(
-    "CREATE OR REPLACE SECRET garage_secret (" +
-    "    TYPE s3," +
-    "    KEY_ID 'GKxxxxxxxxxxxx'," +
-    "    SECRET 'your-secret-key'," +
-    "    ENDPOINT '<deployment-name>.app.cloud.cbh.kth.se'," +
-    "    REGION 'garage'," +
-    "    URL_STYLE 'path'," +
-    "    USE_SSL true" +
-    ")"
-);
-```
+---
 
-> `REGION 'garage'` must match `s3_region` in `garage.toml`.
+## Filer
+
+| Fil | Syfte |
+|---|---|
+| `Dockerfile` | Multi-stage build: Garage-binär + Alpine + nginx |
+| `garage.toml` | Garage-konfiguration med envsubst-platshållare |
+| `nginx.conf` | Reverse proxy: 3900 → 3903 (Admin) / 3905 (S3) |
+| `entrypoint.sh` | Kör envsubst, startar nginx, startar Garage |
