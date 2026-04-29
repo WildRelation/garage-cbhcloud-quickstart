@@ -135,14 +135,27 @@ server {
     listen 3900;
 
     location /v2/ {
-        proxy_pass http://127.0.0.1:3903;   # Garage Admin API
+        proxy_pass http://127.0.0.1:3903;     # Garage Admin API
+        proxy_set_header Host $http_host;     # bevara Host-headern
     }
 
     location / {
-        proxy_pass http://127.0.0.1:3905;   # Garage S3 API
+        proxy_pass http://127.0.0.1:3905;     # Garage S3 API
+        proxy_set_header Host $http_host;     # bevara Host-headern
     }
 }
 ```
+
+**Varför `$http_host` och inte `$host`?**
+
+S3 signature v4 inkluderar `Host`-headern i det signerade strängen. Om klienten ansluter till `ducklake-garage:3900` skickar den `Host: ducklake-garage:3900` (med port). nginx:s standardvärde `$host` innehåller bara hostname utan port (`ducklake-garage`). Garage tar emot ett `Host` som skiljer sig från det klienten signerade → `403 Invalid signature`.
+
+`$http_host` bevarar headern exakt som klienten skickade den, inklusive port, vilket gör att Garage kan verifiera signaturen korrekt.
+
+| Variabel | Värde | Resultat |
+|---|---|---|
+| `$host` | `ducklake-garage` | Signaturfel — port saknas |
+| `$http_host` | `ducklake-garage:3900` | Korrekt — matchar klientens signatur |
 
 ---
 
